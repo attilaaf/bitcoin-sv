@@ -1,4 +1,6 @@
-# Bitcoin SV version 1.0.0-beta Release Notes
+# Bitcoin SV version 0.2.1 Release Notes
+
+This is a beta release. Miners are encouraged to test this release carefully and maintain a v0.2.1 version on standby.
 
 ## List of Changes
 * Increase or remove limits, final version of default values
