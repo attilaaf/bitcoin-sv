@@ -636,7 +636,6 @@ public:
     // to track size/count of descendant transactions. First version of
     // AddUnchecked can be used to have it call CalculateMemPoolAncestors(), and
     // then invoke the second version.
-<<<<<<< HEAD
     void AddUnchecked(
             const uint256 &hash,
             const CTxMemPoolEntry &entry,
@@ -654,8 +653,6 @@ public:
             size_t* pnMempoolSize = nullptr,
             size_t* pnDynamicMemoryUsage = nullptr);
 
-    void RemoveRecursive(
-=======
     bool addUnchecked(const uint256 &hash, const CTxMemPoolEntry &entry,
                       bool validFeeEstimate = true);
     bool addUnchecked(const uint256 &hash, const CTxMemPoolEntry &entry,
@@ -681,8 +678,7 @@ public:
     bool getSpentIndex(CSpentIndexKey &key, CSpentIndexValue &value);
     bool removeSpentIndex(const uint256 txhash);
 
-    void removeRecursive(
->>>>>>> Full address index
+    void RemoveRecursive(
         const CTransaction &tx,
         const mining::CJournalChangeSetPtr& changeSet,
         MemPoolRemovalReason reason = MemPoolRemovalReason::UNKNOWN);
