@@ -198,6 +198,7 @@ static const int64_t MAX_FEE_ESTIMATION_TIP_AGE = 3 * 60 * 60;
 static const bool DEFAULT_PERMIT_BAREMULTISIG = true;
 static const bool DEFAULT_CHECKPOINTS_ENABLED = true;
 static const bool DEFAULT_TXINDEX = false;
+static const bool DEFAULT_SPENTINDEX = false;
 static const unsigned int DEFAULT_BANSCORE_THRESHOLD = 100;
 
 /* Default settings for controlling P2P reading */
@@ -481,6 +482,11 @@ bool IsInitialBlockDownload();
 std::string GetWarnings(const std::string &strFor);
 
 /**
+ * Get the spent index key if it is enabled
+ */
+bool GetSpentIndex(CSpentIndexKey &key, CSpentIndexValue &value);
+
+/**
  * Retrieve a transaction (from memory pool, or from disk, if possible).
  */
 bool GetTransaction(const Config &config, const TxId &txid, CTransactionRef &tx,
@@ -571,13 +577,13 @@ bool IsDAAEnabled(const Config &config, const CBlockIndex *pindexPrev);
 /** Check if Genesis has activated. */
 bool IsGenesisEnabled(const Config &config, const CBlockIndex *pindexPrev);
 /** Check if Genesis has activated.
- * Do not call this overload with height of coin. If the coin was created in mempool, 
+ * Do not call this overload with height of coin. If the coin was created in mempool,
  * this function will throw exception.
  */
 bool IsGenesisEnabled(const Config& config, int nHeight);
 /**  Check if Genesis has activated.
- * When a coins is present in mempool, it will have height MEMPOOL_HEIGHT. 
- * In this case, you should call this overload and specify the mempool height (chainActive.Height()+1) 
+ * When a coins is present in mempool, it will have height MEMPOOL_HEIGHT.
+ * In this case, you should call this overload and specify the mempool height (chainActive.Height()+1)
  *as parameter to correctly determine if genesis is enabled for this coin.
  */
 bool IsGenesisEnabled(const Config& config, const Coin& coin, int mempoolHeight  );
@@ -738,9 +744,9 @@ uint64_t GetSigOpCountWithoutP2SH(const CTransaction &tx, bool isGenesisEnabled,
  * inputs
  * @see CTransaction::FetchInputs
  */
-uint64_t GetP2SHSigOpCount(const Config &config, 
+uint64_t GetP2SHSigOpCount(const Config &config,
                            const CTransaction &tx,
-                           const CCoinsViewCache &mapInputs, 
+                           const CCoinsViewCache &mapInputs,
                            bool& sigOpCountError);
 
 /**
@@ -751,11 +757,11 @@ uint64_t GetP2SHSigOpCount(const Config &config,
  * @param[in] checkP2SH  check if it is P2SH and include signature operation of the redeem scripts
  * @return Total signature operation cost of tx
  */
-uint64_t GetTransactionSigOpCount(const Config &config, 
+uint64_t GetTransactionSigOpCount(const Config &config,
                                   const CTransaction &tx,
-                                  const CCoinsViewCache &inputs, 
-                                  bool checkP2SH, 
-                                  bool isGenesisEnabled, 
+                                  const CCoinsViewCache &inputs,
+                                  bool checkP2SH,
+                                  bool isGenesisEnabled,
                                   bool& sigOpCountError);
 
 /**

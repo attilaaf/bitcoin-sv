@@ -14,7 +14,8 @@
 #include "util.h"
 #include "utilmoneystr.h"
 #include "utilstrencodings.h"
-
+#include "validation.h"
+#include "rpc/protocol.h"
 #include <univalue.h>
 
 std::string FormatScript(const CScript &script) {
@@ -156,7 +157,7 @@ std::string EncodeHexTx(const CTransaction &tx, const int serialFlags) {
     return HexStr(ssTx.begin(), ssTx.end());
 }
 
-void ScriptPubKeyToUniv(const CScript &scriptPubKey, bool fIncludeHex, bool isGenesisEnabled, UniValue &out) {
+void ScriptPubKeyToUniv(const CScript &scriptPubKey, bool fIncludeHex, bool isGenesisEnabled, UniValue &out, bool fIncludeAsm) {
     txnouttype type;
     std::vector<CTxDestination> addresses;
     int nRequired;
@@ -181,7 +182,7 @@ void ScriptPubKeyToUniv(const CScript &scriptPubKey, bool fIncludeHex, bool isGe
     out.pushKV("addresses", a);
 }
 
-void TxToUniv(const CTransaction &tx, const uint256 &hashBlock, bool utxoAfterGenesis,
+void TxToUniv(const Config &config, const CTransaction &tx, const uint256 &hashBlock, bool utxoAfterGenesis,
               UniValue &entry) {
     entry.pushKV("txid", tx.GetId().GetHex());
     entry.pushKV("hash", tx.GetHash().GetHex());

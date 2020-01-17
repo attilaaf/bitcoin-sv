@@ -12,6 +12,7 @@
 #include "primitives/transaction.h"
 #include "random.h"
 #include "sync.h"
+#include "spentindex.h"
 #include "time_locked_mempool.h"
 #include "tx_mempool_info.h"
 
@@ -576,6 +577,12 @@ private:
     void updateParentNL(txiter entry, txiter parent, bool add);
     void updateChildNL(txiter entry, txiter child, bool add);
 
+    typedef std::map<CSpentIndexKey, CSpentIndexValue, CSpentIndexKeyCompare> mapSpentIndex;
+    mapSpentIndex mapSpent;
+
+    typedef std::map<uint256, std::vector<CSpentIndexKey> > mapSpentIndexInserted;
+    mapSpentIndexInserted mapSpentInserted;
+
     std::vector<indexed_transaction_set::const_iterator>
     getSortedDepthAndScoreNL() const;
 
@@ -627,6 +634,10 @@ public:
             bool validFeeEstimate = true,
             size_t* pnMempoolSize = nullptr,
             size_t* pnDynamicMemoryUsage = nullptr);
+
+    void addSpentIndex(const CTxMemPoolEntry &entry, const std::vector<COutPoint> &inputOutputs);
+    bool getSpentIndex(CSpentIndexKey &key, CSpentIndexValue &value);
+    bool removeSpentIndex(const uint256 txhash);
 
     void RemoveRecursive(
         const CTransaction &tx,

@@ -380,7 +380,7 @@ public:
      * are counted more accurately, assuming they are of the form
      *  ... OP_N CHECKMULTISIG ...
      *
-     * After Genesis all sigops are counted accuratelly no matter how the flag is 
+     * After Genesis all sigops are counted accuratelly no matter how the flag is
      * set. More than 16 pub keys are supported, but the size of the number representing
      * number of public keys must not be bigger than CScriptNum::MAXIMUM_ELEMENT_SIZE bytes.
      * If the size is bigger than that, or if the number of public keys is negative,
@@ -395,6 +395,7 @@ public:
     uint64_t GetSigOpCount(const CScript &scriptSig, bool isGenesisEnabled, bool& sigOpCountError) const;
 
     bool IsPayToScriptHash() const;
+    bool IsPayToPublicKeyHash() const;
     bool IsWitnessProgram(int &version, std::vector<uint8_t> &program) const;
 
     /** Called by IsStandardTx and P2SH/BIP62 VerifyScript (which makes it
@@ -410,14 +411,14 @@ public:
      * For Genesis OP_RETURN this can return false negatives. For example if we have:
      *   <some complex script that always return OP_FALSE> OP_RETURN
      * this function will return false even though the ouput is unspendable.
-     * 
+     *
      */
 
     bool IsUnspendable(bool isGenesisEnabled) const {
         if (isGenesisEnabled)
         {
             // Genesis restored OP_RETURN functionality. It no longer uncoditionally fails execution
-            // The top stack value determines if execution suceeds, and OP_RETURN lock script might be spendable if 
+            // The top stack value determines if execution suceeds, and OP_RETURN lock script might be spendable if
             // unlock script pushes non 0 value to the stack.
 
             // We currently only detect OP_FALSE OP_RETURN as provably unspendable.
@@ -433,17 +434,17 @@ public:
 
     /**
      * Returns whether the script looks like a known OP_RETURN script. This is similar to IsUnspendable()
-     * but it does not require nHeight. 
+     * but it does not require nHeight.
      * Use cases:
      *   - decoding transactions to avoid parsing OP_RETURN as other data
      *   - used in wallet for:
-     *   -   for extracting addresses (we do not now how to do that for OP_RETURN) 
+     *   -   for extracting addresses (we do not now how to do that for OP_RETURN)
      *   -   logging unsolvable transactions that contain OP_RETURN
      */
     bool IsKnownOpReturn() const
     {
         return (size() > 0 && *begin() == OP_RETURN) ||
-            (size() > 1 && *begin() == OP_FALSE && *(begin() + 1) == OP_RETURN);        
+            (size() > 1 && *begin() == OP_FALSE && *(begin() + 1) == OP_RETURN);
     }
 
     void clear() {

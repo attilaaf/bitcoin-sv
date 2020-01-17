@@ -17,6 +17,9 @@
 
 class CBlockIndex;
 class CCoinsViewDBCursor;
+struct CSpentIndexKey;
+struct CSpentIndexValue;
+
 class uint256;
 
 //! No need to periodic flush if at least this much space still available.
@@ -123,6 +126,8 @@ public:
     bool ReadReindexing(bool &fReindex);
     bool ReadTxIndex(const uint256 &txid, CDiskTxPos &pos);
     bool WriteTxIndex(const std::vector<std::pair<uint256, CDiskTxPos>> &list);
+    bool ReadSpentIndex(CSpentIndexKey &key, CSpentIndexValue &value);
+    bool UpdateSpentIndex(const std::vector<std::pair<CSpentIndexKey, CSpentIndexValue> >&vect);
     bool WriteFlag(const std::string &name, bool fValue);
     bool ReadFlag(const std::string &name, bool &fValue);
     bool LoadBlockIndexGuts(

@@ -29,6 +29,7 @@
 #include "uint256.h"
 #include "utilstrencodings.h"
 #include "validation.h"
+#include "utilmoneystr.h"
 #ifdef ENABLE_WALLET
 #include "wallet/rpcwallet.h"
 #include "wallet/wallet.h"
@@ -40,7 +41,242 @@
 
 using namespace mining;
 
-void TxToJSON(const CTransaction& tx, const uint256 hashBlock, bool isGenesisEnabled, UniValue& entry)
+typedef std::map<int64_t, int64_t> VoutToValueMap;
+typedef std::map<TxId, std::unique_ptr<VoutToValueMap>> TxIdToVoutToValueMap;
+typedef std::map<int64_t, std::vector<CTxDestination>> VoutToAddressesMap;
+
+void TxToUnivWithExtraFields(const Config &config, const CTransaction &tx, const uint256 &hashBlock, bool utxoAfterGenesis,
+              UniValue &entry, bool fIncludeAsm, bool fIncludeHex) {
+
+    entry.pushKV("txid", tx.GetId().GetHex());
+    entry.pushKV("hash", tx.GetHash().GetHex());
+    entry.pushKV("version", tx.nVersion);
+    entry.pushKV("size", (int)::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION));
+    entry.pushKV("locktime", (int64_t)tx.nLockTime);
+
+    auto begin1 = std::chrono::high_resolution_clock::now();
+
+    std::set<TxId> txidSet;  // Tracks the txid's that are part of the vins used to compute valueIn and addr
+    for (unsigned int i = 0; i < tx.vin.size(); i++) {
+        const CTxIn &txin = tx.vin[i];
+        UniValue in(UniValue::VOBJ);
+        if (!tx.IsCoinBase()) {
+            txidSet.insert(txin.prevout.GetTxId());
+        }
+    }
+    auto end1 = std::chrono::high_resolution_clock::now();
+    auto dur1 = end1 - begin1;
+    auto ms1 = std::chrono::duration_cast<std::chrono::milliseconds>(dur1).count();
+    std::cout << "TxToUnivWithExtraFields - " << tx.GetHash().GetHex() << ": " << ms1 << " ms" << " Start" << std::endl;
+
+    // Fetch all the tx's for the vins
+    std::unique_ptr<TxIdToVoutToValueMap> txidToVoutValueMap(new TxIdToVoutToValueMap());
+    std::unique_ptr<std::map<TxId, std::unique_ptr<VoutToAddressesMap>>> txidToVoutAddressMap(new std::map<TxId, std::unique_ptr<VoutToAddressesMap>>());
+    std::set<TxId>::iterator it = txidSet.begin();
+
+    auto begin2 = std::chrono::high_resolution_clock::now();
+
+    while (it != txidSet.end()) {
+        CTransactionRef txInput;
+        uint256 hashBlockInputTx;
+        bool isGenesisEnabled;
+        if (!GetTransaction(config, *it, txInput, isGenesisEnabled, hashBlockInputTx, isGenesisEnabled)) {
+            std::cout << "bitindex_tx_not_found if (!GetTransaction(config, *it, txInput, hashBlockInputTx, true)) {" << std::endl;
+            throw JSONRPCError(
+            RPC_INVALID_ADDRESS_OR_KEY,
+            std::string(fTxIndex ? "No such mempool or blockchain transaction"
+                                 : "No such mempool transaction. Use -txindex "
+                                   "to enable blockchain transaction queries") +
+                ". Use gettransaction for wallet transactions.");
+            return;
+        }
+        // Build the maps
+        for (unsigned int i = 0; i < txInput->vout.size(); i++) {
+            const CTxOut &txout = txInput->vout[i];
+            auto txidToVoutValueMapIterator = (*txidToVoutValueMap).find(*it);
+            auto txidToVoutAddressMapIterator = (*txidToVoutAddressMap).find(*it);
+            if (txidToVoutValueMapIterator == (*txidToVoutValueMap).end()) {
+                VoutToValueMap* voutValueMap = new VoutToValueMap();
+                VoutToAddressesMap* voutAddrMap = new VoutToAddressesMap();
+                (*txidToVoutValueMap).insert(std::make_pair(*it, std::unique_ptr<VoutToValueMap>(voutValueMap)));
+                (*txidToVoutAddressMap).insert(std::make_pair(*it, std::unique_ptr<VoutToAddressesMap>(voutAddrMap)));
+                txidToVoutValueMapIterator = (*txidToVoutValueMap).find(*it);
+                txidToVoutAddressMapIterator = (*txidToVoutAddressMap).find(*it);
+            }
+            auto voutValueMapIterator = txidToVoutValueMapIterator->second->find((int64_t) i);
+            if (voutValueMapIterator == txidToVoutValueMapIterator->second->end()) {
+                txidToVoutValueMapIterator->second->insert(std::make_pair((int64_t) i, txout.nValue.GetSatoshis()));
+                voutValueMapIterator = txidToVoutValueMapIterator->second->find((int64_t) i);
+            }
+            auto voutAddrMapIterator = txidToVoutAddressMapIterator->second->find((int64_t) i);
+            if (voutAddrMapIterator == txidToVoutAddressMapIterator->second->end()) {
+                txnouttype type;
+                std::vector<CTxDestination> addresses;
+                int nRequired;
+                if (!ExtractDestinations(txout.scriptPubKey, isGenesisEnabled, type, addresses, nRequired)) {
+                    // Could not extract, therefore it is not a typical addr
+                    std::cout << "ExtractDestinations(txout.scriptPubKey, isGenesisEnabled, type, addresses, nRequired) " << std::endl;
+                }
+                txidToVoutAddressMapIterator->second->insert(std::make_pair((int64_t) i, addresses));
+            }
+        }
+        it++;
+    }
+    auto end2 = std::chrono::high_resolution_clock::now();
+    auto dur2 = end2 - begin2;
+    auto ms2 = std::chrono::duration_cast<std::chrono::milliseconds>(dur2).count();
+    std::cout << "TxToUnivWithExtraFields - " << tx.GetHash().GetHex() << ": " << ms2 << " ms" << " buildset" << std::endl;
+
+    auto begin3 = std::chrono::high_resolution_clock::now();
+    int64_t valueIn(0);
+    UniValue vin(UniValue::VARR);
+    for (unsigned int i = 0; i < tx.vin.size(); i++) {
+        const CTxIn &txin = tx.vin[i];
+        UniValue in(UniValue::VOBJ);
+        if (tx.IsCoinBase()) {
+            in.pushKV("coinbase",
+                      HexStr(txin.scriptSig.begin(), txin.scriptSig.end()));
+        } else {
+
+            // Add address and value info if spentindex enabled
+            CSpentIndexValue spentInfo;
+            CSpentIndexKey spentKey(txin.prevout.GetTxId(), txin.prevout.GetN());
+            if (GetSpentIndex(spentKey, spentInfo)) {
+                in.push_back(Pair("value", ValueFromAmount(spentInfo.satoshis)));
+                in.push_back(Pair("valueSat", spentInfo.satoshis.GetSatoshis()));
+                if (spentInfo.addressType == 1) {
+                    // in.push_back(Pair("address", CBitcoinAddress(CKeyID(spentInfo.addressHash)).ToString()));
+                } else if (spentInfo.addressType == 2)  {
+                   //  in.push_back(Pair("address", CBitcoinAddress(CScriptID(spentInfo.addressHash)).ToString()));
+                }
+            }
+
+            in.pushKV("txid", txin.prevout.GetTxId().GetHex());
+            in.pushKV("vout", int64_t(txin.prevout.GetN()));
+            in.push_back(Pair("n", (int64_t)i));
+
+            UniValue o(UniValue::VOBJ);
+            if (fIncludeAsm) {
+                o.push_back(Pair("asm", ScriptToAsmStr(txin.scriptSig, true)));
+            }
+            if (fIncludeHex) {
+                o.push_back(Pair(
+                    "hex", HexStr(txin.scriptSig.begin(), txin.scriptSig.end())));
+            }
+            in.pushKV("scriptSig", o);
+
+            //
+            // Get the "value" vout of the vin
+            //
+            auto voutValueMap = *((*txidToVoutValueMap).find(txin.prevout.GetTxId())->second);
+            const bool isInValueMap = voutValueMap.find(int64_t(txin.prevout.GetN())) != voutValueMap.end();
+
+            if (!isInValueMap) {
+                std::cout << "const bool isInValueMap = voutValueMap.find(int64_t(txin.prevout.GetN())) != voutValueMap.end();" << std::endl;
+                throw new std::exception();
+            }
+            auto vinVoutValue = voutValueMap.find(int64_t(txin.prevout.GetN()));
+            in.push_back(Pair("valueSat", vinVoutValue->second));
+            in.push_back(Pair("value", ValueFromAmount(Amount(vinVoutValue->second))));
+            valueIn += vinVoutValue->second;
+            // Get the the "addr" from vout of vin
+            auto voutAddrMap = *((*txidToVoutAddressMap).find(txin.prevout.GetTxId())->second);
+            auto voutAddrMapAddrIterator = voutAddrMap.find(int64_t(txin.prevout.GetN()));
+            if (voutAddrMapAddrIterator == voutAddrMap.end()) {
+                std::cout << "voutAddrMapAddrIterator == voutAddrMap.end()" << std::endl;
+                throw new std::exception();
+            }
+            auto vinVoutAddr = voutAddrMap.find(int64_t(txin.prevout.GetN()));
+            if (vinVoutAddr->second.size()) {
+                in.push_back(Pair("addr", EncodeDestination(vinVoutAddr->second.at(0))));
+                in.push_back(Pair("address", EncodeDestination(vinVoutAddr->second.at(0))));
+            }
+        }
+
+        in.pushKV("sequence", (int64_t)txin.nSequence);
+        vin.push_back(in);
+    }
+
+    auto end3 = std::chrono::high_resolution_clock::now();
+    auto dur3 = end3 - begin3;
+    auto ms3 = std::chrono::duration_cast<std::chrono::milliseconds>(dur3).count();
+    std::cout << "TxToUnivWithExtraFields - " << tx.GetHash().GetHex() << ": " << ms3 << " ms" << " vinbuild" << std::endl;
+
+    entry.pushKV("vin", vin);
+
+    UniValue vout(UniValue::VARR);
+
+    auto begin4 = std::chrono::high_resolution_clock::now();
+    int64_t valueOut(0);
+    for (unsigned int i = 0; i < tx.vout.size(); i++) {
+        const CTxOut &txout = tx.vout[i];
+
+        UniValue out(UniValue::VOBJ);
+        int64_t voutAmt(txout.nValue.GetSatoshis());
+        valueOut += voutAmt;
+
+        UniValue outValue(UniValue::VNUM, FormatMoney(txout.nValue));
+        out.pushKV("value", outValue);
+        out.push_back(Pair("valueSat", txout.nValue.GetSatoshis()));
+        out.pushKV("n", (int64_t)i);
+
+        UniValue o(UniValue::VOBJ);
+        ScriptPubKeyToUniv(txout.scriptPubKey, fIncludeHex, utxoAfterGenesis, o, fIncludeAsm);
+        out.pushKV("scriptPubKey", o);
+
+        // Add spent information if spentindex is enabled
+        CSpentIndexValue spentInfo;
+        CSpentIndexKey spentKey(tx.GetHash(), i);
+        if (GetSpentIndex(spentKey, spentInfo)) {
+            out.push_back(Pair("spentTxId", spentInfo.txid.GetHex()));
+            out.push_back(Pair("spentIndex", (int)spentInfo.inputIndex));
+            out.push_back(Pair("spentHeight", spentInfo.blockHeight));
+        } else {
+            UniValue o(UniValue::VType::VNULL);
+            out.push_back(Pair("spentTxId", o));
+            out.push_back(Pair("spentIndex", o));
+            out.push_back(Pair("spentHeight", o));
+        }
+
+        vout.push_back(out);
+    }
+
+    entry.pushKV("vout", vout);
+
+    auto end4 = std::chrono::high_resolution_clock::now();
+    auto dur4 = end4 - begin4;
+    auto ms4 = std::chrono::duration_cast<std::chrono::milliseconds>(dur4).count();
+    std::cout << "TxToUnivWithExtraFields - " << tx.GetHash().GetHex() << ": " << ms4 << " ms" << " voutbuild" << std::endl;
+
+    auto begin5 = std::chrono::high_resolution_clock::now();
+
+    if (!hashBlock.IsNull()) {
+        entry.pushKV("blockhash", hashBlock.GetHex());
+    }
+
+    // the hex-encoded transaction. used the name "hex" to be consistent with
+    // the verbose output of "getrawtransaction".
+    entry.pushKV("hex", EncodeHexTx(tx));
+
+    if (!tx.IsCoinBase()) {
+        entry.push_back(Pair("valueIn", ValueFromAmount(Amount(valueIn))));
+        entry.push_back(Pair("fees", ValueFromAmount(Amount(valueIn - valueOut))));
+    } else {
+        entry.push_back(Pair("isCoinBase", true));
+    }
+    entry.push_back(Pair("valueOut", ValueFromAmount(Amount(valueOut))));
+
+    std::string strHex = EncodeHexTx(tx, RPCSerializationFlags());
+
+    auto end5 = std::chrono::high_resolution_clock::now();
+    auto dur5 = end5 - begin5;
+    auto ms5 = std::chrono::duration_cast<std::chrono::milliseconds>(dur5).count();
+    std::cout << "TxToUnivWithExtraFields - " << tx.GetHash().GetHex() << ": " << ms5 << " ms" << " hashblock" << std::endl;
+
+    entry.push_back(Pair("rawtx", strHex));
+}
+
+void TxToJSON(const CTransaction& tx, const uint256 hashBlock, bool isGenesisEnabled, UniValue& entry, bool fIncludeAsm = true, bool fIncludeHex = true)
 {
     // Call into TxToUniv() in bitcoin-common to decode the transaction hex.
     //
@@ -48,6 +284,8 @@ void TxToJSON(const CTransaction& tx, const uint256 hashBlock, bool isGenesisEna
     // available to code in bitcoin-common, so we query them here and push the
     // data into the returned UniValue.
     TxToUniv(tx, uint256(), isGenesisEnabled, entry);
+
+    auto begin5 = std::chrono::high_resolution_clock::now();
 
     if (!hashBlock.IsNull()) {
         entry.push_back(Pair("blockhash", hashBlock.GetHex()));
@@ -64,6 +302,48 @@ void TxToJSON(const CTransaction& tx, const uint256 hashBlock, bool isGenesisEna
             } else {
                 entry.push_back(Pair("confirmations", 0));
             }
+        }
+    }
+}
+
+void TxToJSONWithExtraFields(const Config& config, const CTransaction& tx, const uint256 hashBlock, bool isGenesisEnabled, UniValue& entry, bool fIncludeAsm = true, bool fIncludeHex = true)
+{
+    // Call into TxToUniv() in bitcoin-common to decode the transaction hex.
+    //
+    // Blockchain contextual information (confirmations and blocktime) is not
+    // available to code in bitcoin-common, so we query them here and push the
+    // data into the returned UniValue.
+    TxToUnivWithExtraFields(config, tx, uint256(), isGenesisEnabled, entry, fIncludeAsm, fIncludeHex);
+
+    auto begin5 = std::chrono::high_resolution_clock::now();
+
+    if (!hashBlock.IsNull()) {
+        entry.push_back(Pair("blockhash", hashBlock.GetHex()));
+        auto mi = mapBlockIndex.find(hashBlock);
+        if (mi != mapBlockIndex.end() && (*mi).second) {
+            const CBlockIndex *pindex = (*mi).second;
+            if (chainActive.Contains(pindex)) {
+                entry.push_back(
+                    Pair("confirmations",
+                         1 + chainActive.Height() - pindex->nHeight));
+                entry.push_back(Pair("time", pindex->GetBlockTime()));
+                entry.push_back(Pair("blocktime", pindex->GetBlockTime()));
+                entry.push_back(Pair("blockheight", pindex->nHeight));
+            } else {
+                entry.push_back(Pair("confirmations", 0));
+            }
+        }
+    } else {
+        entry.push_back(Pair("confirmations", 0));
+        // LOCK(mempool.cs);
+        std::shared_lock lock(mempool.smtx);
+
+        CTxMemPool::txiter it = mempool.mapTx.find(tx.GetId());
+        if (it == mempool.mapTx.end()) {
+            entry.push_back(Pair("time", 0));
+        } else {
+            const CTxMemPoolEntry &e = *it;
+            entry.push_back(Pair("time", e.GetTime()));
         }
     }
 }
@@ -197,8 +477,173 @@ static UniValue getrawtransaction(const Config &config,
 
     UniValue result(UniValue::VOBJ);
     result.push_back(Pair("hex", strHex));
-    TxToJSON(*tx, hashBlock, isGenesisEnabled, result);
+
+    TxToJSONWithExtraFields(config, *tx, hashBlock, isGenesisEnabled, result);
+
     return result;
+}
+
+
+static UniValue getrawtransactions(const Config &config,
+                                  const JSONRPCRequest &request) {
+    if (request.fHelp || request.params.size() < 3 ||
+        request.params.size() > 3) {
+        throw std::runtime_error(
+            "getrawtransactions \"txids\" ( includeAsm ) (includeHex) \n"
+
+            "\nNOTE: By default this function only works for mempool "
+            "transactions. If the -txindex option is\n"
+            "enabled, it also works for blockchain transactions.\n"
+            "DEPRECATED: for now, it also works for transactions with unspent "
+            "outputs.\n"
+
+            "\nReturn the raw transactions data.\n"
+            "\nIf verbose is 'true', returns an Object with information about "
+            "'txids'.\n"
+            "If verbose is 'false' or omitted, returns a string that is "
+            "serialized, hex-encoded data for 'txid'.\n"
+
+            "\nArguments:\n"
+            "1. \"txids\"      (string, required) The transaction id\n"
+            "2. noAsm       (bool, optional, default=true) If false, return "
+            "ASM, if true then omit the ASM in transactions\n"
+            "3. noScript       (bool, optional, default=true) If false, return "
+            "script, if true then omit the script in transactions\n"
+
+            "\nResult:\n"
+            "{\n"
+            "  \"hex\" : \"data\",       (string) The serialized, hex-encoded "
+            "data for 'txid'\n"
+            "  \"txid\" : \"id\",        (string) The transaction id (same as "
+            "provided)\n"
+            "  \"hash\" : \"id\",        (string) The transaction hash "
+            "(differs from txid for witness transactions)\n"
+            "  \"size\" : n,             (numeric) The serialized transaction "
+            "size\n"
+            "  \"version\" : n,          (numeric) The version\n"
+            "  \"locktime\" : ttt,       (numeric) The lock time\n"
+            "  \"vin\" : [               (array of json objects)\n"
+            "     {\n"
+            "       \"txid\": \"id\",    (string) The transaction id\n"
+            "       \"vout\": n,         (numeric) \n"
+            "       \"scriptSig\": {     (json object) The script\n"
+            "         \"asm\": \"asm\",  (string) asm (omitted if noAsm=true)\n"
+            "         \"hex\": \"hex\"   (string) hex (omitted if noAsm=true)\n"
+            "       },\n"
+            "       \"sequence\": n      (numeric) The script sequence number\n"
+            "     }\n"
+            "     ,...\n"
+            "  ],\n"
+            "  \"vout\" : [              (array of json objects)\n"
+            "     {\n"
+            "       \"value\" : x.xxx,            (numeric) The value in " +
+            CURRENCY_UNIT +
+            "\n"
+            "       \"n\" : n,                    (numeric) index\n"
+            "       \"scriptPubKey\" : {          (json object)\n"
+            "         \"asm\" : \"asm\",          (string) the asm (omitted if noAsm=true)\n"
+            "         \"hex\" : \"hex\",          (string) the hex (omitted if noAsm=true)\n"
+            "         \"reqSigs\" : n,            (numeric) The required sigs\n"
+            "         \"type\" : \"pubkeyhash\",  (string) The type, eg "
+            "'pubkeyhash'\n"
+            "         \"addresses\" : [           (json array of string)\n"
+            "           \"address\"        (string) bitcoin address\n"
+            "           ,...\n"
+            "         ]\n"
+            "       }\n"
+            "     }\n"
+            "     ,...\n"
+            "  ],\n"
+            "  \"blockhash\" : \"hash\",   (string) the block hash\n"
+            "  \"confirmations\" : n,      (numeric) The confirmations\n"
+            "  \"time\" : ttt,             (numeric) The transaction time in "
+            "seconds since epoch (Jan 1 1970 GMT)\n"
+            "  \"blocktime\" : ttt         (numeric) The block time in seconds "
+            "since epoch (Jan 1 1970 GMT)\n"
+            "}\n"
+
+            "\nExamples:\n" +
+            HelpExampleCli("getrawtransactions", "[\"mytxid1\", \"mytxid2\"]") +
+            HelpExampleCli("getrawtransactions", "[\"mytxid1\"], true false") +
+            HelpExampleRpc("getrawtransactions", "[\"mytxid1\", \"mytxid2\"], false false"));
+    }
+
+    LOCK(cs_main);
+
+    if (!request.params[0].isArray()) {
+        throw JSONRPCError(
+        RPC_TYPE_ERROR,
+        "Invalid type provided. txids parameter must be an array.");
+    }
+
+    bool fIncludeAsm = false;
+
+    if (!request.params[1].isBool()) {
+            throw JSONRPCError(
+            RPC_TYPE_ERROR,
+            "Invalid type provided. IncludeAsm parameter must be a boolean.");
+    } else {
+        fIncludeAsm = request.params[1].isTrue();
+    }
+
+    bool fIncludeHex = false;
+    if (!request.params[2].isBool()) {
+            throw JSONRPCError(
+            RPC_TYPE_ERROR,
+            "Invalid type provided. IncludeHex parameter must be a boolean.");
+    } else {
+        fIncludeHex = request.params[2].isTrue();
+    }
+
+    // std::string strHex = EncodeHexTx(*tx, RPCSerializationFlags());
+    // Todo, remove data
+    // UniValue result(UniValue::VOBJ);
+    // result.push_back(Pair("hex", strHex));
+    // TxToJSON(config, *tx, hashBlock, result);
+
+    UniValue txsResults(UniValue::VARR);
+    // txsResults.push_back(result);
+    // For each txid, get the transaction if available and push it back
+    UniValue txIdsArray(request.params[0].get_array());
+    auto begin1 = std::chrono::high_resolution_clock::now();
+
+    for (size_t idx = 0; idx < txIdsArray.size(); idx++) {
+        auto begin2 = std::chrono::high_resolution_clock::now();
+        const UniValue &p = txIdsArray[idx];
+        TxId txid = TxId(ParseHashV(p, "parameter"));
+        CTransactionRef tx;
+        uint256 hashBlock;
+        auto begin3 = std::chrono::high_resolution_clock::now();
+        bool isGenesisEnabled;
+        if (!GetTransaction(config, txid, tx, true, hashBlock, isGenesisEnabled)) {
+            continue;
+        }
+        auto end3 = std::chrono::high_resolution_clock::now();
+        auto dur3 = end3 - begin3;
+        auto ms3 = std::chrono::duration_cast<std::chrono::milliseconds>(dur3).count();
+        std::cout << "Time to fetch GetTransaction: " << ms3 << " for " << txid.GetHex() << std::endl;
+
+        UniValue result(UniValue::VOBJ);
+        auto begin4 = std::chrono::high_resolution_clock::now();
+
+        TxToJSONWithExtraFields(config, *tx, hashBlock, isGenesisEnabled, result, fIncludeAsm, fIncludeHex);
+        auto end4 = std::chrono::high_resolution_clock::now();
+        auto dur4 = end4 - begin4;
+        auto ms4 = std::chrono::duration_cast<std::chrono::milliseconds>(dur4).count();
+        std::cout << "Time to fetch TxToJSON2: " << ms4 << " for " << txid.GetHex() << std::endl;
+
+        auto end2 = std::chrono::high_resolution_clock::now();
+        auto dur2 = end2 - begin2;
+        auto ms2 = std::chrono::duration_cast<std::chrono::milliseconds>(dur2).count();
+        std::cout << "INNER getrawtransactions time: " << ms2 << " for " << txid.GetHex() << std::endl;
+        txsResults.push_back(result);
+    }
+    auto end1 = std::chrono::high_resolution_clock::now();
+    auto dur1 = end1 - begin1;
+    auto ms1 = std::chrono::duration_cast<std::chrono::milliseconds>(dur1).count();
+    std::cout << "total getrawtransactions time: " << ms1 << std::endl;
+
+    return txsResults;
 }
 
 static UniValue gettxoutproof(const Config &config,
@@ -637,8 +1082,8 @@ static UniValue decodescript(const Config &config,
     }
 
     ScriptPubKeyToUniv(script,
-        true, 
-        script.IsPayToScriptHash() ? false : true,  // treat all transactions as post-Genesis, except P2SH 
+        true,
+        script.IsPayToScriptHash() ? false : true,  // treat all transactions as post-Genesis, except P2SH
         r);
 
     UniValue type;
@@ -1005,7 +1450,7 @@ static UniValue signrawtransaction(const Config &config,
         const CScript &prevPubKey = coin.GetTxOut().scriptPubKey;
         const Amount amount = coin.GetTxOut().nValue;
 
-        bool utxoAfterGenesis = IsGenesisEnabled(config, coin, chainActive.Height() + 1); 
+        bool utxoAfterGenesis = IsGenesisEnabled(config, coin, chainActive.Height() + 1);
 
         SignatureData sigdata;
         // Only sign SIGHASH_SINGLE if there's a corresponding output:
@@ -1020,7 +1465,7 @@ static UniValue signrawtransaction(const Config &config,
         for (const CMutableTransaction &txv : txVariants) {
             if (txv.vin.size() > i) {
                 sigdata = CombineSignatures(
-                    config, 
+                    config,
                     true,
                     prevPubKey,
                     TransactionSignatureChecker(&txConst, i, amount), sigdata,

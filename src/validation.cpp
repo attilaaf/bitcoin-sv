@@ -48,6 +48,7 @@
 #include "versionbits.h"
 #include "warnings.h"
 #include "blockfileinfostore.h"
+#include "spentindex.h"
 
 #include <atomic>
 #include <sstream>
@@ -79,6 +80,7 @@ CConditionVariable cvBlockChange;
 std::atomic_bool fImporting(false);
 bool fReindex = false;
 bool fTxIndex = false;
+bool fSpentIndex = false;
 bool fHavePruned = false;
 bool fPruneMode = false;
 bool fIsBareMultisigStd = DEFAULT_PERMIT_BAREMULTISIG;
@@ -471,11 +473,11 @@ bool CheckSequenceLocks(
     return EvaluateSequenceLocks(index, lockPair);
 }
 
-uint64_t GetSigOpCountWithoutP2SH(const CTransaction &tx, bool isGenesisEnabled, bool& sigOpCountError) 
+uint64_t GetSigOpCountWithoutP2SH(const CTransaction &tx, bool isGenesisEnabled, bool& sigOpCountError)
 {
     sigOpCountError = false;
     uint64_t nSigOps = 0;
-    for (const auto &txin : tx.vin) 
+    for (const auto &txin : tx.vin)
     {
         // After Genesis, this should return 0, since only push data is allowed in input scripts:
         nSigOps += txin.scriptSig.GetSigOpCount(false, isGenesisEnabled, sigOpCountError);
@@ -485,7 +487,7 @@ uint64_t GetSigOpCountWithoutP2SH(const CTransaction &tx, bool isGenesisEnabled,
         }
     }
 
-    for (const auto &txout : tx.vout) 
+    for (const auto &txout : tx.vout)
     {
         nSigOps += txout.scriptPubKey.GetSigOpCount(false, isGenesisEnabled, sigOpCountError);
         if (sigOpCountError)
@@ -536,11 +538,11 @@ uint64_t GetP2SHSigOpCount(const Config &config,
     return nSigOps;
 }
 
-uint64_t GetTransactionSigOpCount(const Config &config, 
+uint64_t GetTransactionSigOpCount(const Config &config,
                                   const CTransaction &tx,
-                                  const CCoinsViewCache &inputs, 
+                                  const CCoinsViewCache &inputs,
                                   bool checkP2SH,
-                                  bool isGenesisEnabled, 
+                                  bool isGenesisEnabled,
                                   bool& sigOpCountError) {
     sigOpCountError = false;
     uint64_t nSigOps = GetSigOpCountWithoutP2SH(tx, isGenesisEnabled, sigOpCountError);
@@ -633,7 +635,7 @@ bool CheckRegularTransaction(const CTransaction &tx, CValidationState &state, ui
     if (tx.IsCoinBase()) {
         return state.DoS(100, false, REJECT_INVALID, "bad-tx-coinbase");
     }
-    
+
     if (!CheckTransactionCommon(tx, state, maxTxSigOpsCountConsensusBeforeGenesis, maxTxSizeConsensus, isGenesisEnabled)) {
         // CheckTransactionCommon fill in the state.
         return false;
@@ -641,12 +643,12 @@ bool CheckRegularTransaction(const CTransaction &tx, CValidationState &state, ui
 
     if (isGenesisEnabled)
     {
-        bool hasP2SHOutput = std::any_of(tx.vout.begin(), tx.vout.end(), 
-            [](const CTxOut& o){ 
-                return o.scriptPubKey.IsPayToScriptHash(); 
+        bool hasP2SHOutput = std::any_of(tx.vout.begin(), tx.vout.end(),
+            [](const CTxOut& o){
+                return o.scriptPubKey.IsPayToScriptHash();
             }
         );
-        
+
         if(hasP2SHOutput)
         {
             return state.DoS(100, false, REJECT_INVALID, "bad-txns-vout-p2sh");
@@ -792,12 +794,12 @@ static std::optional<bool> CheckInputsFromMempoolAndCache(
     }
 
     // For Consenus parameter false is used because we already use policy rules in first CheckInputs call
-    // from TxnValidation function that is called before this one, and if that call succeeds then we 
+    // from TxnValidation function that is called before this one, and if that call succeeds then we
     // can use policy rules again but with different flags now
     return CheckInputs(
                 token,
                 config,
-                false,          
+                false,
                 tx,
                 state,
                 view,
@@ -1066,6 +1068,7 @@ void CommitTxToMempool(
             fTxValidForFeeEstimation,
             pnMempoolSize,
             pnDynamicMemoryUsage);
+
     // Check if the mempool size needs to be limited.
     if (fLimitMempoolSize) {
         // Trim mempool and check if tx was trimmed.
@@ -1127,15 +1130,15 @@ CTxnValResult TxnValidation(
     CValidationState state;
     std::vector<COutPoint> vCoinsToUncache {};
 
-    // First check against consensus limits. If this check fails, then banscore will be increased. 
+    // First check against consensus limits. If this check fails, then banscore will be increased.
     // We re-test the transaction with policy rules later in this method (without banning if rules are violated)
     bool isGenesisEnabled = IsGenesisEnabled(config, chainActive.Height() + 1);
     uint64_t maxTxSigOpsCountConsensusBeforeGenesis = config.GetMaxTxSigOpsCountConsensusBeforeGenesis();
     uint64_t maxTxSizeConsensus = config.GetMaxTxSize(isGenesisEnabled, true);
     // Coinbase is only valid in a block, not as a loose transaction.
-    if (!CheckRegularTransaction(tx, state, maxTxSigOpsCountConsensusBeforeGenesis, maxTxSizeConsensus, isGenesisEnabled)) 
+    if (!CheckRegularTransaction(tx, state, maxTxSigOpsCountConsensusBeforeGenesis, maxTxSizeConsensus, isGenesisEnabled))
     {
-        // We will re-check the transaction if we are in Genesis gracefull period, to check if genesis rules would 
+        // We will re-check the transaction if we are in Genesis gracefull period, to check if genesis rules would
         // allow this script transaction to be accepted. If it is valid under Genesis rules, we only reject it
         // without adding banscore
         bool isGenesisGracefulPeriod = IsGenesisGracefulPeriod(config, chainActive.Height() + 1);
@@ -1165,8 +1168,8 @@ CTxnValResult TxnValidation(
     // Rather not work on nonstandard transactions (unless -testnet/-regtest)
     // We determine if a transaction is standard or not based on assumption that
     // it will be mined in the next block. We accept the fact that it might get mined
-    // into a later block and thus can become non standard transaction. 
-    // Example: Transaction containing output with "OP_RETURN" and 0 value 
+    // into a later block and thus can become non standard transaction.
+    // Example: Transaction containing output with "OP_RETURN" and 0 value
     //          is not dust under old rules, but it is dust under new rules,
     //          but we will mine it nevertheless. Anyone can collect such
     //          coin by providing OP_1 unlock script
@@ -1402,7 +1405,7 @@ CTxnValResult TxnValidation(
         return Result{state, pTxInputData, vCoinsToUncache};
     }
 
-    // We are getting flags as they would be if the utxos are before genesis. 
+    // We are getting flags as they would be if the utxos are before genesis.
     // "CheckInputs" is adding specific flags for each input based on its height in the main chain
     uint32_t scriptVerifyFlags = GetScriptVerifyFlags(config, IsGenesisEnabled(config, chainActive.Height() + 1));
     // Check against previous transactions. This is done last to help
@@ -1725,6 +1728,12 @@ void ProcessValidatedTxn(
             fLimitMempoolSize,
             fMempoolLogs ? &nMempoolSize : nullptr,
             fMempoolLogs ? &nDynamicMemoryUsage : nullptr);
+
+        // Add memory spent index
+        if (fSpentIndex) {
+            pool.addSpentIndex(*(txStatus.mpEntry), txStatus.mCoinsToUncache);
+        }
+
         // Check txn's commit status and do all required actions.
         if (TxSource::p2p == source) {
             PostValidationStepsForP2PTxn(txStatus, pool, handlers);
@@ -1991,6 +2000,7 @@ static void PostValidationStepsForP2PTxn(
         LogPrint(BCLog::TXNVAL, "An invalid reference: Node doesn't exist");
         return;
     }
+
     const CTransactionRef& ptx = txStatus.mTxInputData->mpTx;
     const CValidationState& state = txStatus.mState;
     // Post processing step for successfully commited txns (non-orphans & orphans)
@@ -2115,6 +2125,25 @@ static void UpdateMempoolForReorg(const Config &config,
             height,
             chainActive.Tip()->GetMedianTimePast(),
             StandardNonFinalVerifyFlags(IsGenesisEnabled(config, height)));
+}
+
+/**
+ *
+ * The spent index key and value to retrieve from mempool or block tree
+ *
+ */
+bool GetSpentIndex(CSpentIndexKey &key, CSpentIndexValue &value)
+{
+    if (!fSpentIndex)
+        return false;
+
+    if (mempool.getSpentIndex(key, value))
+        return true;
+
+    if (!pblocktree->ReadSpentIndex(key, value))
+        return false;
+
+    return true;
 }
 
 /**
@@ -2395,7 +2424,7 @@ std::unique_ptr<CForwardReadonlyStream> StreamSyncBlockFromDisk(CBlockIndex& ind
                 CFileReader{std::move(file)});
     }
 
-    return 
+    return
         std::make_unique<CBlockStream<CFileReader>>(
             CFileReader{std::move(file)},
             CStreamVersionAndType{SER_DISK, CLIENT_VERSION},
@@ -2706,12 +2735,12 @@ std::optional<bool> CheckInputs(
 
     const auto [ spendHeight, mtp ] = GetSpendHeightAndMTP(inputs);
     (void)mtp;  // Silence unused variable warning
-    if (!Consensus::CheckTxInputs(tx, state, inputs, spendHeight)) 
+    if (!Consensus::CheckTxInputs(tx, state, inputs, spendHeight))
     {
         return false;
     }
 
-    if (pvChecks) 
+    if (pvChecks)
     {
         pvChecks->reserve(tx.vin.size());
     }
@@ -2725,7 +2754,7 @@ std::optional<bool> CheckInputs(
     // block merkle hashes are still computed and checked, of course, if an
     // assumed valid block is invalid due to false scriptSigs this optimization
     // would allow an invalid chain to be accepted.
-    if (!fScriptChecks) 
+    if (!fScriptChecks)
     {
         return true;
     }
@@ -2735,12 +2764,12 @@ std::optional<bool> CheckInputs(
     // transaction hash which is in tx's prevouts properly commits to the
     // scriptPubKey in the inputs view of that transaction).
     uint256 hashCacheEntry = GetScriptCacheKey(tx, flags);
-    if (IsKeyInScriptCache(hashCacheEntry, !scriptCacheStore)) 
+    if (IsKeyInScriptCache(hashCacheEntry, !scriptCacheStore))
     {
         return true;
     }
 
-    for (size_t i = 0; i < tx.vin.size(); i++) 
+    for (size_t i = 0; i < tx.vin.size(); i++)
     {
         const COutPoint &prevout = tx.vin[i].prevout;
         const Coin &coin = inputs.AccessCoin(prevout);
@@ -2767,7 +2796,7 @@ std::optional<bool> CheckInputs(
         // Verify signature
         CScriptCheck check(config, consensus, scriptPubKey, amount, tx, i, flags | perInputScriptFlags, sigCacheStore,
                            txdata);
-        if (pvChecks) 
+        if (pvChecks)
         {
             pvChecks->push_back(std::move(check));
         }
@@ -2789,7 +2818,7 @@ std::optional<bool> CheckInputs(
                 // and non-upgraded nodes.
                 // FIXME: CORE-257 has to check if genesis check is necessary also in check2
                 uint32_t flags2Check = flags | perInputScriptFlags;
-                // Consensus flag is set to true, because we check policy rules in check1. If we would test policy rules 
+                // Consensus flag is set to true, because we check policy rules in check1. If we would test policy rules
                 // again and fail because the transaction exceeds our policy limits, the node would get banned and this is not ok
                 CScriptCheck check2(
                     config, true,
@@ -2804,7 +2833,7 @@ std::optional<bool> CheckInputs(
                 {
                     return state.Invalid(false, REJECT_NONSTANDARD,
                             strprintf("non-mandatory-script-verify-flag (%s)", ScriptErrorString(check.GetScriptError())));
-                } 
+                }
                 else if (genesisGracefulPeriod)
                 {
                     uint32_t flags3Check = flags2Check ^ SCRIPT_UTXO_AFTER_GENESIS;
@@ -2819,7 +2848,7 @@ std::optional<bool> CheckInputs(
                     {
                         return {};
                     }
-                    else if (res3.value()) 
+                    else if (res3.value())
                     {
                         return state.Invalid(false, REJECT_NONSTANDARD,
                             strprintf("genesis-script-verify-flag-failed (%s)", ScriptErrorString(check.GetScriptError())));
@@ -2840,7 +2869,7 @@ std::optional<bool> CheckInputs(
         }
     }
 
-    if (scriptCacheStore && !pvChecks) 
+    if (scriptCacheStore && !pvChecks)
     {
         // We executed all of the provided scripts, and were told to cache the
         // result. Do so now.
@@ -3001,6 +3030,8 @@ DisconnectResult ApplyBlockUndo(const CBlockUndo &blockUndo,
         return DISCONNECT_FAILED;
     }
 
+    std::vector<std::pair<CSpentIndexKey, CSpentIndexValue> > spentIndex;
+
     // Undo transactions in reverse order.
     size_t i = block.vtx.size();
     while (i-- > 0) {
@@ -3044,12 +3075,31 @@ DisconnectResult ApplyBlockUndo(const CBlockUndo &blockUndo,
                 return DISCONNECT_FAILED;
             }
             fClean = fClean && res != DISCONNECT_UNCLEAN;
+
+            const CTxIn input = tx.vin[j];
+            if (fSpentIndex) {
+                // undo and delete the spent index
+                // Todo: WTF bitpay didn't do anything with this!!!
+                // It's like the spentIndex is not restored
+                // This may not be a problem if all utxo's get spent
+                // But what if some tx's are missed in a huge re-org???
+                // See all of https://github.com/bitpay/bitcoin/commit/9babc7ff9fa19b93cf7b3ef2f73ec4e66f8c132f
+                // I've added the UpdateSpentIndex below as it should be there
+                spentIndex.push_back(std::make_pair(CSpentIndexKey(input.prevout.GetTxId(), input.prevout.GetN()), CSpentIndexValue()));
+            }
         }
     }
 
     // Move best block pointer to previous block.
     view.SetBestBlock(block.hashPrevBlock);
 
+    if (fSpentIndex) {
+        if (!pblocktree->UpdateSpentIndex(spentIndex)) {
+            CValidationState state;
+            AbortNode(state, "Failed to undo write spent index");
+            return DISCONNECT_UNCLEAN;
+        }
+    }
     return fClean ? DISCONNECT_OK : DISCONNECT_UNCLEAN;
 }
 
@@ -3329,6 +3379,8 @@ static bool ConnectBlock(
 
     uint64_t maxTxSigOpsCountConsensusBeforeGenesis = config.GetMaxTxSigOpsCountConsensusBeforeGenesis();
 
+    std::vector<std::pair<CSpentIndexKey, CSpentIndexValue> > spentIndex;
+
     for (size_t i = 0; i < block.vtx.size(); i++) {
         const CTransaction &tx = *(block.vtx[i]);
 
@@ -3354,6 +3406,33 @@ static bool ConnectBlock(
                     100, error("%s: contains a non-BIP68-final transaction",
                                __func__),
                     REJECT_INVALID, "bad-txns-nonfinal");
+            }
+
+            if (fSpentIndex)
+            {
+                for (size_t j = 0; j < tx.vin.size(); j++) {
+                    const CTxIn input = tx.vin[j];
+                    const CTxOut &prevout = view.GetOutputFor(tx.vin[j]);
+                    uint160 hashBytes;
+                    int addressType;
+
+                    if (prevout.scriptPubKey.IsPayToScriptHash()) {
+                        hashBytes = uint160(std::vector<unsigned char>(prevout.scriptPubKey.begin()+2, prevout.scriptPubKey.begin()+22));
+                        addressType = 2;
+                    } else if (prevout.scriptPubKey.IsPayToPublicKeyHash()) {
+                        hashBytes = uint160(std::vector<unsigned char>(prevout.scriptPubKey.begin()+3, prevout.scriptPubKey.begin()+23));
+                        addressType = 1;
+                    } else {
+                        hashBytes.SetNull();
+                        addressType = 0;
+                    }
+
+                    if (fSpentIndex) {
+                        // add the spent index to determine the txid and input that spent an output
+                        // and to find the amount and address from an input
+                        spentIndex.push_back(std::make_pair(CSpentIndexKey(input.prevout.GetTxId(), input.prevout.GetN()), CSpentIndexValue(tx.GetHash(), j, pindex->nHeight, prevout.nValue, addressType, hashBytes)));
+                    }
+                }
             }
         }
 
@@ -3543,6 +3622,10 @@ static bool ConnectBlock(
         throw CBestBlockAttachmentCancellation{};
     }
 
+    if (fSpentIndex)
+        if (!pblocktree->UpdateSpentIndex(spentIndex))
+            return AbortNode(state, "Failed to write spent index");
+
     // add this block to the view's block chain
     view.SetBestBlock(pindex->GetBlockHash());
 
@@ -3649,7 +3732,7 @@ bool FlushStateToDisk(
                 // Then update all block file information (which may refer to
                 // block and undo files).
                 {
-                    
+
                     std::vector<std::pair<int, const CBlockFileInfo *>> vFiles = pBlockFileInfoStore->GetAndClearDirtyFileInfo();
                     std::vector<const CBlockIndex *> vBlocks;
                     vBlocks.reserve(setDirtyBlockIndex.size());
@@ -4916,7 +4999,7 @@ bool CheckBlock(const Config &config, const CBlock &block,
     // Size limits.
     auto nMaxBlockSize = config.GetMaxBlockSize();
 
-    // Bail early if there is no way this block is of reasonable size.  
+    // Bail early if there is no way this block is of reasonable size.
     if ( MIN_TRANSACTION_SIZE > 0 && block.vtx.size () > (nMaxBlockSize/MIN_TRANSACTION_SIZE)){
         return state.DoS(100, false, REJECT_INVALID, "bad-blk-length", false,"size limits failed");
     }
@@ -5147,8 +5230,8 @@ static bool ContextualCheckBlock(const Config &config, const CBlock &block,
     }
 
     // Check if block has the right size. Maximum accepted block size changes
-    // according to predetermined schedule unless user has overriden this by 
-    // specifying -excessiveblocksize command line parameter 
+    // according to predetermined schedule unless user has overriden this by
+    // specifying -excessiveblocksize command line parameter
     const int64_t nMedianTimePast =
         pindexPrev == nullptr ? 0 : pindexPrev->GetMedianTimePast();
 
@@ -5189,7 +5272,7 @@ static bool ContextualCheckBlock(const Config &config, const CBlock &block,
 }
 
 /**
- * If found, returns an index of a previous block. 
+ * If found, returns an index of a previous block.
  */
 static const CBlockIndex* FindPreviousBlockIndex(const CBlockHeader &block, CValidationState &state)
 {
@@ -5472,7 +5555,7 @@ bool VerifyNewBlock(const Config &config,
 
     {
         LOCK(cs_main);
-        
+
         pindexPrev = FindPreviousBlockIndex(*pblock, state);
         if (!pindexPrev)
         {
@@ -5875,6 +5958,11 @@ static bool LoadBlockIndexDB(const CChainParams &chainparams) {
     pblocktree->ReadFlag("txindex", fTxIndex);
     LogPrintf("%s: transaction index %s\n", __func__,
               fTxIndex ? "enabled" : "disabled");
+
+    // Check whether we have a spent index
+    pblocktree->ReadFlag("spentindex", fSpentIndex);
+    LogPrintf("%s: spent index %s\n", __func__, fSpentIndex ? "enabled" : "disabled");
+
 
     return true;
 }
@@ -6283,6 +6371,10 @@ bool InitBlockIndex(const Config &config) {
     // Use the provided setting for -txindex in the new database
     fTxIndex = gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX);
     pblocktree->WriteFlag("txindex", fTxIndex);
+
+    fSpentIndex = gArgs.GetBoolArg("-spentindex", DEFAULT_SPENTINDEX);
+    pblocktree->WriteFlag("spentindex", fSpentIndex);
+
     LogPrintf("Initializing databases...\n");
 
     // Only add the genesis block if not reindexing (in which case we reuse the
@@ -6323,7 +6415,7 @@ bool InitBlockIndex(const Config &config) {
 
 void ReindexAllBlockFiles(const Config &config, CBlockTreeDB *pblocktree, bool& fReindex)
 {
-    
+
     int nFile = 0;
     while (true) {
         CDiskBlockPos pos(nFile, 0);

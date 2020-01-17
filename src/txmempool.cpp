@@ -555,6 +555,79 @@ void CTxMemPool::AddUncheckedNL(
     }
 }
 
+void CTxMemPool::addSpentIndex(const CTxMemPoolEntry &entry, const std::vector<COutPoint> &inputOutputs)
+{
+    std::shared_lock lock(smtx);
+
+    const CTransaction& tx = entry.GetTx();
+    std::vector<CSpentIndexKey> inserted;
+
+    uint256 txhash = tx.GetHash();
+    unsigned int j = 0;
+    for (std::vector<COutPoint>::const_iterator cit = inputOutputs.begin(); cit != inputOutputs.end(); cit++) {
+    // for (unsigned int j = 0; j < tx.vin.size(); j++) {
+        // const CTxIn input = tx.vin[j];
+        // const CTxOut &prevout = view.GetOutputFor(input);
+        uint160 addressHash;
+        int addressType;
+
+        // With genesis...do we really care about p2sh?
+        // We also don't care where a coins got spent toward, just that they are in an outpoint
+        /*
+        if (prevout.scriptPubKey.IsPayToScriptHash()) {
+            addressHash = uint160(std::vector<unsigned char> (prevout.scriptPubKey.begin()+2, prevout.scriptPubKey.begin()+22));
+            addressType = 2;
+        } else if (prevout.scriptPubKey.IsPayToPublicKeyHash()) {
+            addressHash = uint160(std::vector<unsigned char> (prevout.scriptPubKey.begin()+3, prevout.scriptPubKey.begin()+23));
+            addressType = 1;
+        } else {*/
+            addressHash.SetNull();
+            addressType = 0;
+        // }
+
+        CSpentIndexKey key = CSpentIndexKey(cit->GetTxId(), cit->GetN());
+        // We also do not care about the value
+        // CSpentIndexValue value = CSpentIndexValue(txhash, j, -1, prevout.nValue, addressType, addressHash);
+        Amount dummyValue(0);
+        CSpentIndexValue value = CSpentIndexValue(txhash, j, -1, dummyValue, addressType, addressHash);
+
+        mapSpent.insert(std::make_pair(key, value));
+        inserted.push_back(key);
+        j++;
+    }
+
+    mapSpentInserted.insert(make_pair(txhash, inserted));
+}
+
+bool CTxMemPool::getSpentIndex(CSpentIndexKey &key, CSpentIndexValue &value)
+{
+    std::shared_lock lock(smtx);
+    mapSpentIndex::iterator it;
+
+    it = mapSpent.find(key);
+    if (it != mapSpent.end()) {
+        value = it->second;
+        return true;
+    }
+    return false;
+}
+
+bool CTxMemPool::removeSpentIndex(const uint256 txhash)
+{
+    std::shared_lock lock(smtx);
+    mapSpentIndexInserted::iterator it = mapSpentInserted.find(txhash);
+
+    if (it != mapSpentInserted.end()) {
+        std::vector<CSpentIndexKey> keys = (*it).second;
+        for (std::vector<CSpentIndexKey>::iterator mit = keys.begin(); mit != keys.end(); mit++) {
+            mapSpent.erase(*mit);
+        }
+        mapSpentInserted.erase(it);
+    }
+
+    return true;
+}
+
 void CTxMemPool::removeUncheckedNL(
     txiter it,
     const CJournalChangeSetPtr& changeSet,

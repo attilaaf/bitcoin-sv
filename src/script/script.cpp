@@ -301,10 +301,10 @@ uint64_t CScript::GetSigOpCount(bool fAccurate, bool isGenesisEnabled, bool& sig
             // post Genesis we always count accurate ops because it's not significantly costlier
             else if (isGenesisEnabled)
             {
-                if (lastOpcode == OP_0) 
+                if (lastOpcode == OP_0)
                 {
                     // Checking multisig with 0 keys, so nothing to add to n
-                }                
+                }
                 else if (lastVch.size() > CScriptNum::MAXIMUM_ELEMENT_SIZE)
                 {
                     // When trying to spend such output EvalScript does not allow numbers bigger than 4 bytes
@@ -346,7 +346,7 @@ uint64_t CScript::GetSigOpCount(bool fAccurate, bool isGenesisEnabled, bool& sig
     return n;
 }
 
-uint64_t CScript::GetSigOpCount(const CScript &scriptSig, bool isGenesisEnabled, bool& sigOpCountError) const 
+uint64_t CScript::GetSigOpCount(const CScript &scriptSig, bool isGenesisEnabled, bool& sigOpCountError) const
 {
     sigOpCountError = false;
     if (!IsPayToScriptHash())
@@ -359,7 +359,7 @@ uint64_t CScript::GetSigOpCount(const CScript &scriptSig, bool isGenesisEnabled,
     // pushes onto the stack:
     const_iterator pc = scriptSig.begin();
     std::vector<uint8_t> data;
-    while (pc < scriptSig.end()) 
+    while (pc < scriptSig.end())
     {
         opcodetype opcode;
         if (!scriptSig.GetOp(pc, opcode, data)) return 0;
@@ -383,6 +383,17 @@ bool CScript::IsPayToScriptHash() const {
     // Extra-fast test for pay-to-script-hash CScripts:
     return (this->size() == 23 && (*this)[0] == OP_HASH160 &&
             (*this)[1] == 0x14 && (*this)[22] == OP_EQUAL);
+}
+
+bool CScript::IsPayToPublicKeyHash() const
+{
+    // Extra-fast test for pay-to-pubkey-hash CScripts:
+    return (this->size() == 25 &&
+	    (*this)[0] == OP_DUP &&
+	    (*this)[1] == OP_HASH160 &&
+	    (*this)[2] == 0x14 &&
+	    (*this)[23] == OP_EQUALVERIFY &&
+	    (*this)[24] == OP_CHECKSIG);
 }
 
 // A witness program is any valid CScript that consists of a 1-byte push opcode

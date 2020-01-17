@@ -422,13 +422,13 @@ public:
      * The result is pessimistic, because we assume that 8 bytes are required to encode number
      * of elements, which is only true for very large numbers.
      * @param maxPayloadLength : maximal size of INV message *payload* (without header) that a peer can receive (in bytes)
-     * @ return : number of elements in INV message that corresponds to maxPayloadLength 
+     * @ return : number of elements in INV message that corresponds to maxPayloadLength
 
     **/
     static constexpr uint32_t estimateMaxInvElements(unsigned int maxPayloadLength) {
 
         return (maxPayloadLength - 8 /* number of elements */) / (4 /* type */ + 32 /* hash size */);
-    } 
+    }
 
 };
 
@@ -452,7 +452,7 @@ public:
         } else {
             throw std::ios_base::failure("Invalid deserialization. Number of fields specified in protoconf is equal to 0.");
         }
-        
+
     }
 };
 
